@@ -17,6 +17,8 @@ byte-slice-cast = "1.0.0"
 wgpu = { version = "22.1.0", features = [ "glsl" ] }
 naga = "22.1.0"
 pollster = "0.3"
+fitsrs = { path = "../fitsrs" }
+memmap2 = "0.9.5"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

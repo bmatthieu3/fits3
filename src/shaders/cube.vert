@@ -1,5 +1,7 @@
 // shader.vert
 #version 440
+precision highp int;
+precision highp float;
 
 layout(location=0) in vec2 a_ndc;
 

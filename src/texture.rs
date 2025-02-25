@@ -1,5 +1,3 @@
-use image::GenericImageView;
-
 pub struct Texture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
@@ -13,7 +11,7 @@ pub trait TextureFormat: ToByteSlice {
 }
 
 impl TextureFormat for f32 {
-    const WGPU_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+    const WGPU_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 }
 impl TextureFormat for u8 {
     const WGPU_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -57,7 +55,7 @@ impl Texture {
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
             address_mode_w: wgpu::AddressMode::Repeat,
-            mag_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
@@ -113,12 +111,12 @@ impl Texture {
     pub fn from_raw_bytes<T: TextureFormat>(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        bytes: Option<&[T]>,
+        bytes: Option<&[u8]>,
         dimensions: (u32, u32, u32),
         num_bytes_per_pixel: usize,
         label: &str,
     ) -> Self {
-        let bytes = bytes.and_then(|bytes| Some(T::to_byte_slice(bytes)));
+        //let bytes = bytes.and_then(|bytes| Some(T::to_byte_slice(bytes)));
         Self::from_bytes_rgba(
             device,
             queue,
@@ -131,7 +129,8 @@ impl Texture {
     }
 
     // rgba images
-    pub fn from_image(
+    /*
+    pub(crate) fn from_image(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         img: &image::DynamicImage,
@@ -149,5 +148,5 @@ impl Texture {
             4,
             label,
         )
-    }
+    }*/
 }

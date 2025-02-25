@@ -16,10 +16,13 @@ use winit::{
 use winit::keyboard::PhysicalKey;
 use winit::keyboard::KeyCode;
 use winit::window::Fullscreen;
+use winit::dpi::PhysicalPosition;
 mod texture;
 mod vertex;
 mod time;
 mod math;
+use fitsrs::card::Value;
+use fitsrs::HDU;
 
 use time::Clock;
 use vertex::Vertex;
@@ -43,20 +46,23 @@ struct State<'a> {
     index_buffer: wgpu::Buffer,
     //num_indices: u32,
 
-    map_texture: texture::Texture,
-    texture_bind_group_layout: wgpu::BindGroupLayout,
+    //cube: texture::Texture,
+    //texture_bind_group_layout: wgpu::BindGroupLayout,
     diffuse_bind_group: wgpu::BindGroup,
 
     // uniforms
     rot_mat_buf: wgpu::Buffer,
     window_size_buf: wgpu::Buffer,
     time_buf: wgpu::Buffer,
+    cam_origin_buf: wgpu::Buffer,
 
     clock: Clock,
 }
 
-use math::Vec2;
-use crate::math::Vec3;
+use fitsrs::Fits;
+use memmap2::Mmap;
+use std::fs::File;
+use std::io::Cursor;
 
 use crate::math::Mat4;
 impl<'a> State<'a> {
@@ -130,38 +136,33 @@ impl<'a> State<'a> {
         let img = image::load_from_memory(bytes).unwrap();
         let map_texture = texture::Texture::from_image(&device, &queue, &img, "map.png");*/
 
-        let map_texture = Texture::from_raw_bytes::<u8>(
-            &device,
-            &queue,
-            None,
-            (512, 512, 12),
-            4,
-            "base HEALPix cells"
-        );
+        let file = File::open("cubes/NGC3198_cube.fits").unwrap();
+        let mmap = unsafe { Mmap::map(&file).unwrap() };
 
-        /*let tiles = [
-            image::load_from_memory(include_bytes!("../img/Npix0.jpg")).unwrap().to_rgba8(),
-            image::load_from_memory(include_bytes!("../img/Npix1.jpg")).unwrap().to_rgba8(),
-            image::load_from_memory(include_bytes!("../img/Npix2.jpg")).unwrap().to_rgba8(),
-            image::load_from_memory(include_bytes!("../img/Npix3.jpg")).unwrap().to_rgba8(),
-            image::load_from_memory(include_bytes!("../img/Npix4.jpg")).unwrap().to_rgba8(),
-            image::load_from_memory(include_bytes!("../img/Npix5.jpg")).unwrap().to_rgba8(),
-            image::load_from_memory(include_bytes!("../img/Npix6.jpg")).unwrap().to_rgba8(),
-            image::load_from_memory(include_bytes!("../img/Npix7.jpg")).unwrap().to_rgba8(),
-            image::load_from_memory(include_bytes!("../img/Npix8.jpg")).unwrap().to_rgba8(),
-            image::load_from_memory(include_bytes!("../img/Npix9.jpg")).unwrap().to_rgba8(),
-            image::load_from_memory(include_bytes!("../img/Npix10.jpg")).unwrap().to_rgba8(),
-            image::load_from_memory(include_bytes!("../img/Npix11.jpg")).unwrap().to_rgba8(),
-        ];
+        let mut hdu_list = Fits::from_reader(Cursor::new(mmap));
+        let hdu = hdu_list.next().unwrap().unwrap();
 
-        for (idx, rgba_tile) in tiles.iter().enumerate() {
-            map_texture.write_data(
-                &queue,
-                (0, 0, idx as u32),
-                &rgba_tile,
-                (512, 512, 1)
-            );
-        }*/
+        let cube = match hdu {
+            HDU::Primary(hdu) => {
+                let header = hdu.get_header();
+
+                if let (Some(Value::Integer {value: w, .. }), Some(Value::Integer {value: h, .. }), Some(Value::Integer {value: d, .. })) = (header.get("NAXIS1"), header.get("NAXIS2"), header.get("NAXIS3")) {
+                    let image = hdu_list.get_data(&hdu);
+
+                    Texture::from_raw_bytes::<f32>(
+                        &device,
+                        &queue,
+                        Some(image.raw_bytes()),
+                        (*w as u32, *h as u32, *d as u32),
+                        4,
+                        "cube"
+                    )
+                } else {
+                    unreachable!()
+                }
+            }
+            _ => unreachable!()
+        };
 
         // Uniform buffer
         let rot_mat_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -173,6 +174,13 @@ impl<'a> State<'a> {
 
         let time_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("time in secs since starting"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let cam_origin_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Cam origin"),
             size: 16,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -194,14 +202,14 @@ impl<'a> State<'a> {
                         ty: wgpu::BindingType::Texture {
                             multisampled: false,
                             view_dimension: wgpu::TextureViewDimension::D3,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         },
                         count: None,
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                         count: None,
                     },
                     // rot matrix uniform
@@ -243,6 +251,19 @@ impl<'a> State<'a> {
                         },
                         count: None,
                     },
+                    // cam origin uniform
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(
+                                std::mem::size_of::<Vec4<f32>>() as wgpu::BufferAddress,
+                            ),
+                        },
+                        count: None,
+                    },
                 ],
                 label: Some("texture_bind_group_layout"),
             });
@@ -252,11 +273,11 @@ impl<'a> State<'a> {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&map_texture.view),
+                    resource: wgpu::BindingResource::TextureView(&cube.view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&map_texture.sampler),
+                    resource: wgpu::BindingResource::Sampler(&cube.sampler),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -288,6 +309,16 @@ impl<'a> State<'a> {
                         ),
                     }),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &cam_origin_buf,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(
+                            16
+                        ),
+                    }),
+                },
             ],
             label: Some("diffuse_bind_group"),
         });
@@ -295,18 +326,18 @@ impl<'a> State<'a> {
         // uniform buffer
         let vs_shader =
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("allsky vert shader"),
+                label: Some("cube vert shader"),
                 source: wgpu::ShaderSource::Glsl {
-                    shader: include_str!("shaders/allsky.vert").into(),
+                    shader: std::str::from_utf8(&std::fs::read("src\\shaders\\cube.vert").unwrap()).unwrap().into(),
                     stage: naga::ShaderStage::Vertex,
                     defines: Default::default()
                 }
             });
         let fs_shader =
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("allsky frag shader"),
+                label: Some("cube frag shader"),
                 source: wgpu::ShaderSource::Glsl {
-                    shader: include_str!("shaders/allsky.frag").into(),
+                    shader: std::str::from_utf8(&std::fs::read("src\\shaders\\cube.frag").unwrap()).unwrap().into(),
                     stage: naga::ShaderStage::Fragment,
                     defines: Default::default()
                 },
@@ -388,17 +419,15 @@ impl<'a> State<'a> {
             render_pipeline,
             vertex_buffer,
             index_buffer,
-            //num_indices,
 
-            map_texture,
-
-            texture_bind_group_layout,
+            //texture_bind_group_layout,
             diffuse_bind_group,
 
             // uniforms
             window_size_buf,
             rot_mat_buf,
             time_buf,
+            cam_origin_buf,
 
             clock,
         }
@@ -439,101 +468,6 @@ impl<'a> State<'a> {
         self.queue
             .write_buffer(&self.time_buf, 0, bytemuck::bytes_of(&[elapsed, 0.0, 0.0, 0.0]));
     }
-
-    /*fn set_projection(&mut self, idx: usize) {
-        // Update the vertex and index buffers
-        let (vertices, indices) = match idx {
-            0 => Triangulation::create::<Aitoff>(),
-            1 => Triangulation::create::<Ortho>(),
-            2 => Triangulation::create::<Mollweide>(),
-            3 => Triangulation::create::<Mercator>(),
-            4 => Triangulation::create::<AzimuthalEquidistant>(),
-            5 => Triangulation::create::<Gnomonic>(),
-            _ => unimplemented!(),
-        };
-
-        self.vertex_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Vertex Buffer"),
-                contents: bytemuck::cast_slice(&vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-        self.index_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Index Buffer"),
-                contents: bytemuck::cast_slice(&indices),
-                usage: wgpu::BufferUsages::INDEX,
-            });
-        self.num_indices = indices.len() as u32;
-
-        // Update the uniforms
-        let aspect = match idx {
-            0 => {
-                Aitoff::compute_ndc_to_clip_factor(self.size.width as f32, self.size.height as f32)
-            }
-            1 => Ortho::compute_ndc_to_clip_factor(self.size.width as f32, self.size.height as f32),
-            2 => Mollweide::compute_ndc_to_clip_factor(
-                self.size.width as f32,
-                self.size.height as f32,
-            ),
-            3 => Mercator::compute_ndc_to_clip_factor(
-                self.size.width as f32,
-                self.size.height as f32,
-            ),
-            4 => AzimuthalEquidistant::compute_ndc_to_clip_factor(
-                self.size.width as f32,
-                self.size.height as f32,
-            ),
-            5 => Gnomonic::compute_ndc_to_clip_factor(
-                self.size.width as f32,
-                self.size.height as f32,
-            ),
-            _ => unimplemented!(),
-        };
-        self.queue.write_buffer(
-            &self.window_size_buf,
-            0,
-            bytemuck::bytes_of(&[aspect.x, aspect.y, 0.0, 0.0]),
-        );
-
-        // Update the bind group with the texture position from the current projection
-        self.diffuse_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &self.texture_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&self.map_texture.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.map_texture.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &self.rot_mat_buf,
-                        offset: 0,
-                        size: wgpu::BufferSize::new(
-                            std::mem::size_of::<Mat4<f32>>() as wgpu::BufferAddress
-                        ),
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &self.window_size_buf,
-                        offset: 0,
-                        size: wgpu::BufferSize::new(
-                            16
-                        ),
-                    }),
-                },
-            ],
-            label: Some("diffuse_bind_group"),
-        });
-    }*/
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let size = self.window.inner_size();
@@ -599,7 +533,7 @@ pub async fn run() {
     env_logger::init();
 
     let event_loop = EventLoop::new().unwrap();
-    let mut builder = WindowBuilder::new();
+    let builder = WindowBuilder::new();
 
     #[cfg(target_arch = "wasm32")]
     {   
@@ -616,7 +550,7 @@ pub async fn run() {
 
         builder = builder.with_canvas(Some(canvas));
     }
-    let window = builder.with_title("allsky projections")
+    let window = builder.with_title("Astronomical cube visualizer")
         .build(&event_loop).unwrap();
 
     // Winit prevents sizing with CSS, so we have to set
@@ -629,7 +563,14 @@ pub async fn run() {
 
     let mut state = State::new(&window).await;
 
-    let mut count: i32 = 0;
+    let mut panning = false;
+    let mut cursor_pos = PhysicalPosition::new(0.0, 0.0);
+    let mut start_cursor_pos = PhysicalPosition::new(0.0, 0.0);
+
+    let mut delta = 0.0;
+    let mut theta = 0.0;
+    let mut dtheta = 0.0;
+    let mut ddelta: f64 = 0.0;
 
     event_loop.run(move |event, control_flow| {
         match event {
@@ -654,19 +595,6 @@ pub async fn run() {
                             event:
                                 KeyEvent {
                                     state: ElementState::Pressed,
-                                    physical_key: PhysicalKey::Code(KeyCode::ArrowLeft),
-                                    ..
-                                },
-                            ..
-                        } => {
-                            //count += 1;
-                            //count %= NUM_PROJECTIONS;
-                            //state.set_projection(count as usize);
-                        },
-                        WindowEvent::KeyboardInput {
-                            event:
-                                KeyEvent {
-                                    state: ElementState::Pressed,
                                     physical_key: PhysicalKey::Code(KeyCode::Enter),
                                     ..
                                 },
@@ -674,23 +602,6 @@ pub async fn run() {
                         } => {
                             // toggle fullscreen
                             state.window.set_fullscreen(Some(Fullscreen::Borderless(None)));
-                        },
-                        WindowEvent::KeyboardInput {
-                            event:
-                                KeyEvent {
-                                    state: ElementState::Pressed,
-                                    physical_key: PhysicalKey::Code(KeyCode::ArrowRight),
-                                    ..
-                                },
-                            ..
-                        } => {
-                            /*count -= 1;
-                                if count < 0 {
-                                    count += NUM_PROJECTIONS;
-                                }
-                                count %= NUM_PROJECTIONS;
-
-                                state.set_projection(count as usize);*/
                         },
                         WindowEvent::Resized(physical_size) => state.resize(*physical_size),
                         WindowEvent::RedrawRequested => {
@@ -705,19 +616,38 @@ pub async fn run() {
                                 Err(e) => { eprintln!("{}", e); },
                             }
                         }
-                        /*WindowEvent::ScaleFactorChanged { scale_factor, inner_size_writer } => {
-                            state.inner_size
-                            // new_inner_size is &mut so w have to dereference it twice
-                            match count {
-                                0 => state.resize::<Aitoff>(**new_inner_size),
-                                1 => state.resize::<Ortho>(**new_inner_size),
-                                2 => state.resize::<Mollweide>(**new_inner_size),
-                                3 => state.resize::<Mercator>(**new_inner_size),
-                                4 => state.resize::<AzimuthalEquidistant>(**new_inner_size),
-                                5 => state.resize::<Gnomonic>(**new_inner_size),
-                                _ => unimplemented!(),
+                        WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                            panning = true;
+                            start_cursor_pos = cursor_pos;
+                            dtheta = 0.0;
+                            ddelta = 0.0;
+                        }
+                        WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                            panning = false;
+                            theta += dtheta;
+                            delta += ddelta;
+
+                            delta = delta.clamp(-std::f64::consts::PI * 0.5 + 1e-3, std::f64::consts::PI * 0.5 - 1e-3);
+                        }
+                        WindowEvent::CursorMoved { position, .. } => {
+                            cursor_pos = *position;
+
+                            if panning {
+                                let dx = (cursor_pos.x - start_cursor_pos.x) / ((state.size.width as f64) * 0.5);
+                                let dy = (cursor_pos.y - start_cursor_pos.y) / ((state.size.height as f64) * 0.5);
+
+                                dtheta = 2.0*dx;
+                                ddelta = dy;
+
+                                let d = (delta as f32 + ddelta as f32).clamp(-std::f32::consts::PI * 0.5 + 1e-3, std::f32::consts::PI * 0.5 - 1e-3);
+
+                                state.queue.write_buffer(
+                                    &state.cam_origin_buf,
+                                    0,
+                                    bytemuck::bytes_of(&[theta as f32 + dtheta as f32, d, 0.0, 0.0]),
+                                );
                             }
-                        }*/
+                        }
                         _ => {}
                     }
                 }
