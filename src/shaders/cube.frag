@@ -18,6 +18,10 @@ layout(set = 0, binding = 5)
 uniform Origin {
     vec4 origin;
 };
+layout(set = 0, binding = 6)
+uniform Cut {
+    vec4 cut;
+};
 
 vec3 lonlat2xyz(float lon, float lat) {
     float lat_s = sin(lat);
@@ -95,14 +99,17 @@ void main() {
     vec3 p_cam = o_cam + ox * ndc.x + oy * ndc.y;
 
     // vector director from the cam origin to the pixel on screen
-    vec3 r = normalize(p_cam - cam_origin);
+    // traditional perspective director vector
+    //vec3 r = normalize(p_cam - cam_origin);
+    // orthographic perspective
+    vec3 r = cam_dir;
 
     // we define our cube as 2 bounds vertices, l and h
     vec3 l = vec3(-0.5, -0.5, -0.5);
     vec3 h = vec3(0.5, 0.5, 0.5);
 
-    vec3 t_low = (l - cam_origin) / r;
-    vec3 t_high = (h - cam_origin) / r;
+    vec3 t_low = (l - p_cam) / r;
+    vec3 t_high = (h - p_cam) / r;
 
     vec3 t_close = min(t_low, t_high);
     vec3 t_far = max(t_low, t_high);
@@ -116,18 +123,24 @@ void main() {
         float intensity = 0.0;
         float step = 0.01;
         float num_sampling = (t_f - t_c) / step;
+
+        float scale = cut.x;
+        float off = cut.y;
         for (float t = t_c; t < t_f; t += step) {
             // absolute sampling point
-            vec3 p = cam_origin + r * t;
+            vec3 p = p_cam + r * t;
             // scaled to the origin of the cube
             vec3 v = p - l;
             // v lies in [0; 1]^3
 
             float t_val = to_l_endian(texture(sampler3D(t_map, s_map), v).r);
 
-            intensity += (t_val - dmin) / (dmax - dmin);
+            float t_val_norm = (t_val - dmin) / (dmax - dmin);
+
+            intensity += t_val_norm;
         }
         intensity /= num_sampling;
+        intensity = intensity * scale + off;
 
         f_color = colormap(intensity);
     }

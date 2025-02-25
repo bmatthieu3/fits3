@@ -55,6 +55,7 @@ struct State<'a> {
     window_size_buf: wgpu::Buffer,
     time_buf: wgpu::Buffer,
     cam_origin_buf: wgpu::Buffer,
+    cuts_buf: wgpu::Buffer,
 
     clock: Clock,
 }
@@ -186,6 +187,13 @@ impl<'a> State<'a> {
             mapped_at_creation: false,
         });
 
+        let cuts_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Cuts"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let window_size_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("window size uniform"),
             size: 16,
@@ -264,6 +272,19 @@ impl<'a> State<'a> {
                         },
                         count: None,
                     },
+                    // cuts uniform
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(
+                                std::mem::size_of::<Vec4<f32>>() as wgpu::BufferAddress,
+                            ),
+                        },
+                        count: None,
+                    },
                 ],
                 label: Some("texture_bind_group_layout"),
             });
@@ -313,6 +334,16 @@ impl<'a> State<'a> {
                     binding: 5,
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         buffer: &cam_origin_buf,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(
+                            16
+                        ),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &cuts_buf,
                         offset: 0,
                         size: wgpu::BufferSize::new(
                             16
@@ -408,6 +439,13 @@ impl<'a> State<'a> {
         });
         //let num_indices = indices.len() as u32;
 
+        // set the initial cut values
+        queue.write_buffer(
+            &cuts_buf,
+            0,
+            bytemuck::bytes_of(&[1.0 as f32, 0.0, 0.0, 0.0]),
+        );
+
         let clock = Clock::now();
         Self {
             surface,
@@ -428,6 +466,7 @@ impl<'a> State<'a> {
             rot_mat_buf,
             time_buf,
             cam_origin_buf,
+            cuts_buf,
 
             clock,
         }
@@ -564,13 +603,21 @@ pub async fn run() {
     let mut state = State::new(&window).await;
 
     let mut panning = false;
+    let mut cuts = false;
     let mut cursor_pos = PhysicalPosition::new(0.0, 0.0);
     let mut start_cursor_pos = PhysicalPosition::new(0.0, 0.0);
 
+    // move variable
     let mut delta = 0.0;
     let mut theta = 0.0;
     let mut dtheta = 0.0;
     let mut ddelta: f64 = 0.0;
+
+    // cuts
+    let mut scale = 1.0;
+    let mut offset = 0.0;
+    let mut dscale = 0.0;
+    let mut doffset = 0.0;
 
     event_loop.run(move |event, control_flow| {
         match event {
@@ -616,6 +663,7 @@ pub async fn run() {
                                 Err(e) => { eprintln!("{}", e); },
                             }
                         }
+                        // Moving
                         WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                             panning = true;
                             start_cursor_pos = cursor_pos;
@@ -628,6 +676,18 @@ pub async fn run() {
                             delta += ddelta;
 
                             delta = delta.clamp(-std::f64::consts::PI * 0.5 + 1e-3, std::f64::consts::PI * 0.5 - 1e-3);
+                        }
+                        // Change cuts
+                        WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+                            cuts = true;
+                            start_cursor_pos = cursor_pos;
+                            dscale = 0.0;
+                            doffset = 0.0;
+                        }
+                        WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Right, .. } => {
+                            cuts = false;
+                            scale += dscale;
+                            offset += doffset;
                         }
                         WindowEvent::CursorMoved { position, .. } => {
                             cursor_pos = *position;
@@ -645,6 +705,18 @@ pub async fn run() {
                                     &state.cam_origin_buf,
                                     0,
                                     bytemuck::bytes_of(&[theta as f32 + dtheta as f32, d, 0.0, 0.0]),
+                                );
+                            } else if cuts {
+                                let dx = (cursor_pos.x - start_cursor_pos.x) / ((state.size.width as f64) * 0.5);
+                                let dy = (cursor_pos.y - start_cursor_pos.y) / ((state.size.height as f64) * 0.5);
+
+                                dscale = dy;
+                                doffset = dx;
+
+                                state.queue.write_buffer(
+                                    &state.cuts_buf,
+                                    0,
+                                    bytemuck::bytes_of(&[scale as f32 + dscale as f32, offset as f32 + doffset as f32, 0.0, 0.0]),
                                 );
                             }
                         }
