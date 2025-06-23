@@ -6,7 +6,6 @@ edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
-image = "0.23.14"
 winit = { version = "0.29", features = ["rwh_05"]}
 env_logger = "0.10"
 log = "0.4"
@@ -14,8 +13,7 @@ futures = "0.3"
 bytemuck = { version = "1.4", features = [ "derive" ] }
 cgmath = "0.18.0"
 byte-slice-cast = "1.0.0"
-wgpu = { version = "22.1.0", features = [ "glsl" ] }
-naga = "22.1.0"
+wgpu = { version = "25.0.2", features = ["glsl"]}
 pollster = "0.3"
 fitsrs = { path = "../fitsrs" }
 memmap2 = "0.9.5"
@@ -33,20 +31,26 @@ crate-type = ["cdylib", "rlib"]
 wasm-bindgen = "0.2.73" # remember to change version in wiki as well
 console_error_panic_hook = "0.1.6"
 console_log = "1.0"
-wgpu = { version = "22.1.0", features = ["webgl", "glsl"]}
-web-sys = { version = "0.3", features = [
+wgpu = { version = "25.0.2", features = ["webgl", "glsl"]}
+web-sys = { version = "0.3.77", features = [
     "Document",
     "Window",
     "Element",
     "HtmlCanvasElement",
-    "Performance"
+    "Performance",
+    "HtmlInputElement",
+    "FileReader",
+    "FileList",
+    "File",
+    "Event"
 ]}
 js-sys = "0.3.50"
 wasm-bindgen-futures = "0.4.30"
 getrandom = { version = "0.2", features = ["js"] }
+async-channel = { version = "2.3.1" }
 
 [profile.release]
-opt-level = "z"
+opt-level = 'z'
 debug = false
 debug-assertions = false
 overflow-checks = false

@@ -13,7 +13,7 @@ pub trait TextureFormat: ToByteSlice {
 impl TextureFormat for f32 {
     const WGPU_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 }
-impl TextureFormat for u8 {
+impl TextureFormat for [u8; 4] {
     const WGPU_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 }
 impl Texture {
@@ -26,11 +26,7 @@ impl Texture {
         num_bytes_per_pixel: usize,
         label: &str,
     ) -> Self {
-        let dimension = if dimensions.2 == 1 {
-            wgpu::TextureDimension::D2
-        } else {
-            wgpu::TextureDimension::D3
-        };
+        let dimension = wgpu::TextureDimension::D3;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             // All textures are stored as 3D, we represent our 2D texture
