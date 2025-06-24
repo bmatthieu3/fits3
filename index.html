@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGPU astronomical FITS cube visualizer</title>
+</head>
+
+<body id="wasm-example">
+  <div class="container">
+    <div class="panel left" id="leftPanel">
+        <h1>WebGPU astronomical FITS cube viewer</h1>
+        <div>How to visualize your own data ?
+            <ul>
+                <li>Save your numpy array to a FITS file by following this <a href="./convert_numpy2fits.py" target="_blank">python script</a></li>
+                <li>Your 3d array shape must be less than 512 in every dimension. Otherwise the browser may not support it</li>
+                <li>Example of cubes to load can be found <a href="">here</a></li>
+            </ul>
+        </div>
+        <div>Controls:
+            <ul>
+                <li>Click on the cube and press "Enter" to enter fullscreen mode. "Escape" to go back to normal</li>
+                <li>Left click + drag the mouse on the cube to move it all directions</li>
+                <li>Right click + drag to change the contrast</li>
+            </ul>
+        </div>
+        <div title="Choose a FITS file"><input type="file" id="file-input" accept=".fits" /></div>
+        <div title="Orthographic vs Perspective"><label for="ortho">Perspective: </label><input type="checkbox" id="ortho" name="ortho" /></div>
+        <div title="Set the min value of the cube for normalizing"><label for="min">Min value:</label><input id="min" type="number" value="0.0" /></div>
+        <div title="Set the max value of the cube for normalizing"><label for="max">Max value:</label><input id="max" type="number" value="1.0" /></div>
+    </div>
+    <div class="resizer" id="resizer"></div>
+    <div class="panel right" id="rightPanel">
+        <canvas title="click and press Enter to enter fullscreen mode" id="canvas"></canvas>
+    </div>
+  </div>
+
+  <script>
+    const resizer = document.getElementById('resizer');
+    const leftPanel = document.getElementById('leftPanel');
+    let isResizing = false;
+
+    resizer.addEventListener('mousedown', (e) => {
+      isResizing = true;
+      document.body.style.cursor = 'ew-resize';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isResizing) return;
+      const newWidth = e.clientX;
+      leftPanel.style.width = `${newWidth}px`;
+    });
+
+    document.addEventListener('mouseup', () => {
+      isResizing = false;
+      document.body.style.cursor = 'default';
+    });
+  </script>
+
+  <script type="text/javascript" src="./dist/fits3.umd.js" charset="utf-8"></script>
+  <script type="module">
+    fits3.default().then(() => {
+        let orthoCheckbox = document.getElementById("ortho");
+        orthoCheckbox.addEventListener("change", () => {
+            fits3.setPerspective(orthoCheckbox.checked)
+        });
+
+        let datamin = document.getElementById("min");
+        let datamax = document.getElementById("max");
+
+        datamin.addEventListener("change", (e) => {
+            let min = +e.target.value
+            let max = +datamax.value
+            fits3.normalize(min, max);
+        });
+        datamax.addEventListener("change", (e) => {
+            let min = +datamin.value
+            let max = +e.target.value
+            fits3.normalize(min, max);
+        });
+    });
+  </script>
+</body>
+
+</html>
+
+<style>
+    /* scale the canvas to decrease its resolution */
+    canvas {
+        transform: scale(1.3);
+        padding-left: 0;
+        padding-right: 0;
+        margin-left: auto;
+        margin-right: auto;
+        display: block;
+        background-color: black;
+        width: 100%;
+        height: 100%;
+    }
+
+
+    html, body {
+      height: 100%;
+      overflow: hidden;
+      font-family: sans-serif;
+    }
+
+    .container {
+      display: flex;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    .panel {
+      height: 100%;
+      overflow: auto;
+    }
+
+    .left {
+      background-color: #f0f0f0;
+      width: 50%;
+      padding: 10px;
+    }
+
+    .panel.left div {
+        padding-bottom: 10px;
+    }
+
+    .right {
+      background-color: #ddd;
+      flex-grow: 1;
+    }
+
+    .resizer {
+      width: 5px;
+      cursor: ew-resize;
+      background-color: #888;
+    }
+
+    .resizer:hover {
+      background-color: #666;
+    }
+</style>

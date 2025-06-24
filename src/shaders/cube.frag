@@ -22,6 +22,14 @@ layout(set = 0, binding = 6)
 uniform Cut {
     vec4 cut;
 };
+layout(set = 0, binding = 7)
+uniform Perspective {
+    vec4 perspective;
+};
+layout(set = 0, binding = 8)
+uniform MinMax {
+    vec4 minmax;
+};
 
 vec3 lonlat2xyz(float lon, float lat) {
     float lat_s = sin(lat);
@@ -138,8 +146,7 @@ const float fov = 0.523333;
 const float camera_near = 1.0;
 //const float dmin = -2.451346722E-03;
 //const float dmax = 1.179221552E-02;
-const float dmin = -1.0;
-const float dmax = 2.0;
+
 // we define our cube as 2 bounds vertices, l and h
 const vec3 l = vec3(-0.5, -0.5, -0.5);
 const vec3 h = vec3(0.5, 0.5, 0.5);
@@ -160,9 +167,13 @@ void main() {
     // vector director from the cam origin to the pixel on screen
     // traditional perspective director vector
     // orthographic perspective
-    vec3 r = cam_dir;
-    // perspective
-    //vec3 r = normalize(p_cam - cam_origin);
+    vec3 r;
+    if (perspective.x == 1.0) {
+        // perspective
+        r = normalize(p_cam - cam_origin);
+    } else {
+        r = cam_dir;
+    }
 
     vec3 t_low = (l - p_cam) / r;
     vec3 t_high = (h - p_cam) / r;
@@ -196,7 +207,6 @@ void main() {
     // absolute sampling point
     // scaled to the origin of the cube
     vec3 p = p_cam + r * t_s - l;
-    float alpha = 1.0;
     for (int i = 0; i < num_sampling; i++) {
         intensity += to_l_endian(texture(sampler3D(t_map, s_map), p).r);
         /*alpha *= 0.97;
@@ -206,7 +216,7 @@ void main() {
         p += dr;
     }
     intensity /= num_sampling;
-    intensity = ((intensity - dmin) / (dmax - dmin)) * cut.x + cut.y;
+    intensity = ((intensity - minmax.x) / (minmax.y - minmax.x)) * cut.x + cut.y;
 
     //intensity = asinhStretch(intensity, 2.0, 1.0);
 

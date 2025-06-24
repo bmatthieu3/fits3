@@ -1,9 +1,10 @@
 extern crate byte_slice_cast;
 
+use log::warn;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 use wgpu::Device;
-use winit::event_loop;
+use winit::event_loop::ControlFlow;
 #[cfg(target_arch = "wasm32")]
 extern crate console_error_panic_hook;
 
@@ -20,6 +21,7 @@ use winit::{
     event_loop::EventLoop,
     window::{Window, WindowBuilder},
 };
+mod gui;
 mod math;
 mod texture;
 mod time;
@@ -32,14 +34,22 @@ use texture::Texture;
 use time::Clock;
 use vertex::Vertex;
 
+//use gui::EguiRenderer;
+
+use fitsrs::Fits;
+#[cfg(not(target_arch = "wasm32"))]
+use memmap2::Mmap;
+#[cfg(not(target_arch = "wasm32"))]
+use std::fs::File;
+use std::io::Cursor;
+
 const CUBES_PATH: &[&'static str] = &[
     /*"./cubes/NGC3198_cube.fits",
     "./cubes/NGC7331_cube.fits",
     "./cubes/CO_21.fits",*/
     "./cubes/DHIGLS_DF_Tb.fits",
     "./cubes/DHIGLS_MG_Tb.fits",
-    "./cubes/DHIGLS_PO_Tb.fits"
-    //"./cubes/cosmo512-be.fits",
+    "./cubes/DHIGLS_PO_Tb.fits", //"./cubes/cosmo512-be.fits",
 ];
 
 struct State<'a> {
@@ -69,77 +79,69 @@ struct State<'a> {
     time_buf: wgpu::Buffer,
     cam_origin_buf: wgpu::Buffer,
     cuts_buf: wgpu::Buffer,
+    perspective_buf: wgpu::Buffer,
+    minmax_buf: wgpu::Buffer,
 
     clock: Clock,
 
     i: usize,
+    //egui: EguiRenderer,
 }
 
-use fitsrs::Fits;
-use memmap2::Mmap;
-use std::fs::File;
-use std::io::Cursor;
-
-fn parse_fits_data_cube<R>(fits: &mut Fits<Cursor<R>>) -> (&[u8], (u32, u32, u32))
+fn parse_fits_data_cube<R>(
+    fits: &mut Fits<Cursor<R>>,
+) -> Result<(&[u8], (u32, u32, u32)), &'static str>
 where
     R: AsRef<[u8]> + std::fmt::Debug,
 {
-    let hdu = fits.next().unwrap().unwrap();
+    if let Some(Ok(hdu)) = fits.next() {
+        match hdu {
+            HDU::Primary(hdu) => {
+                let header = hdu.get_header();
 
-    match hdu {
-        HDU::Primary(hdu) => {
-            let header = hdu.get_header();
+                if let (
+                    Some(Value::Integer { value: w, .. }),
+                    Some(Value::Integer { value: h, .. }),
+                    Some(Value::Integer { value: d, .. }),
+                ) = (
+                    header.get("NAXIS1"),
+                    header.get("NAXIS2"),
+                    header.get("NAXIS3"),
+                ) {
+                    let image = fits.get_data(&hdu);
 
-            if let (
-                Some(Value::Integer { value: w, .. }),
-                Some(Value::Integer { value: h, .. }),
-                Some(Value::Integer { value: d, .. }),
-            ) = (
-                header.get("NAXIS1"),
-                header.get("NAXIS2"),
-                header.get("NAXIS3"),
-            ) {
-                let image = fits.get_data(&hdu);
+                    let d1 = *w as u32;
+                    let d2 = *h as u32;
+                    let mut d3 = *d as u32;
 
-                let d1 = *w as u32;
-                let d2 = *h as u32;
-                let mut d3 = *d as u32;
-
-                if d3 == 1 {
-                    // parse NAXIS4 instead it there is
-                    if let Some(Value::Integer { value, .. }) = header.get("NAXIS4") {
-                        d3 = *value as u32;
+                    if d3 == 1 {
+                        // parse NAXIS4 instead it there is
+                        if let Some(Value::Integer { value, .. }) = header.get("NAXIS4") {
+                            d3 = *value as u32;
+                        }
                     }
-                }
 
-                (image.raw_bytes(), (d1, d2, d3))
-            } else {
-                unreachable!()
+                    Ok((image.raw_bytes(), (d1, d2, d3)))
+                } else {
+                    Err("FITS image extension not found")
+                }
             }
+            _ => Err("FITS image extension not found"),
         }
-        _ => unreachable!(),
+    } else {
+        Err("Is not a FITS file")
     }
 }
 
-fn load_fits_cube_file<P: AsRef<Path>>(
-    path: P,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-) -> Texture {
-    let file = File::open(path).unwrap();
-    let mmap = unsafe { Mmap::map(&file).unwrap() };
-
-    let reader = Cursor::new(mmap);
-    read_fits(reader, device, queue)
-}
-
-fn read_fits<R: AsRef<[u8]> + std::fmt::Debug>(
+use std::fmt::Debug;
+fn read_fits<R: AsRef<[u8]> + Debug>(
     reader: Cursor<R>,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-) -> Texture {
+) -> Result<Texture, &'static str> {
     let mut fits = Fits::from_reader(reader);
-    let (raw_bytes, dim) = parse_fits_data_cube(&mut fits);
+    let (raw_bytes, dim) = parse_fits_data_cube(&mut fits)?;
+
     Texture::from_raw_bytes::<f32>(&device, &queue, Some(raw_bytes), dim, 4, "cube")
 }
 
@@ -211,7 +213,8 @@ impl<'a> State<'a> {
             desired_maximum_frame_latency: 2,
         };
 
-        let cube = Texture::from_raw_bytes::<f32>(&device, &queue, None, (1, 1, 1), 4, "cube");
+        let cube =
+            Texture::from_raw_bytes::<f32>(&device, &queue, None, (1, 1, 1), 4, "cube").unwrap();
         //let cube = load_fits_cube_file(&CUBES_PATH[0], &device, &queue);
 
         // Uniform buffer
@@ -224,6 +227,20 @@ impl<'a> State<'a> {
 
         let time_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("time in secs since starting"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let perspective_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("perspective"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let minmax_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("minmax"),
             size: 16,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -334,6 +351,32 @@ impl<'a> State<'a> {
                         },
                         count: None,
                     },
+                    // perspective uniform
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 7,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(
+                                std::mem::size_of::<Vec4<f32>>() as wgpu::BufferAddress,
+                            ),
+                        },
+                        count: None,
+                    },
+                    // minmax uniform
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 8,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(
+                                std::mem::size_of::<Vec4<f32>>() as wgpu::BufferAddress,
+                            ),
+                        },
+                        count: None,
+                    },
                 ],
                 label: Some("texture_bind_group_layout"),
             });
@@ -387,6 +430,22 @@ impl<'a> State<'a> {
                     binding: 6,
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         buffer: &cuts_buf,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(16),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &perspective_buf,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(16),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &minmax_buf,
                         offset: 0,
                         size: wgpu::BufferSize::new(16),
                     }),
@@ -495,7 +554,22 @@ impl<'a> State<'a> {
             bytemuck::bytes_of(&[1.0 as f32, 0.0, 0.0, 0.0]),
         );
 
+        queue.write_buffer(
+            &minmax_buf,
+            0,
+            bytemuck::bytes_of(&[0.0_f32, 1.0, 0.0, 0.0]),
+        );
+
         let clock = Clock::now();
+
+        /*let mut egui = EguiRenderer::new(
+            &device,       // wgpu Device
+            config.format, // TextureFormat
+            None,          // this can be None
+            1,             // samples
+            window,        // winit Window
+        );*/
+
         Self {
             surface,
             device,
@@ -517,9 +591,11 @@ impl<'a> State<'a> {
             time_buf,
             cam_origin_buf,
             cuts_buf,
+            minmax_buf,
+            perspective_buf,
 
             clock,
-
+            //egui,
             i: 0,
         }
     }
@@ -627,8 +703,11 @@ impl<'a> State<'a> {
         Ok(())
     }
 
-    fn visualize_cube<R: AsRef<[u8]> + std::fmt::Debug>(&mut self, reader: Cursor<R>) {
-        let new_cube = read_fits(reader, &self.device, &self.queue);
+    fn visualize_cube<R: AsRef<[u8]> + std::fmt::Debug>(
+        &mut self,
+        reader: Cursor<R>,
+    ) -> Result<(), &'static str> {
+        let new_cube = read_fits(reader, &self.device, &self.queue)?;
 
         self.diffuse_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &self.texture_bind_group_layout,
@@ -683,10 +762,79 @@ impl<'a> State<'a> {
                         size: wgpu::BufferSize::new(16),
                     }),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &self.perspective_buf,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(16),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &self.minmax_buf,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(16),
+                    }),
+                },
             ],
             label: Some("diffuse_bind_group"),
         });
+
+        Ok(())
     }
+}
+
+use std::ops::Range;
+#[derive(Debug, Default)]
+struct Params {
+    perspective: Option<bool>,
+    minmax: Option<Range<f32>>,
+}
+
+#[cfg(target_arch = "wasm32")]
+use lazy_static::lazy_static;
+#[cfg(target_arch = "wasm32")]
+lazy_static! {
+    static ref CHANNEL_PARAMS: (
+        async_channel::Sender<Params>,
+        async_channel::Receiver<Params>,
+    ) = async_channel::unbounded::<Params>();
+}
+
+static mut PARAMS: Params = Params {
+    perspective: None,
+    minmax: None,
+};
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = "setPerspective")]
+pub fn set_perspective(perspective: bool) {
+    wasm_bindgen_futures::spawn_local(async move {
+        CHANNEL_PARAMS
+            .0
+            .send(Params {
+                perspective: Some(perspective),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+    });
+}
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = "normalize")]
+pub fn normalize(min: f32, max: f32) {
+    wasm_bindgen_futures::spawn_local(async move {
+        CHANNEL_PARAMS
+            .0
+            .send(Params {
+                minmax: Some(min..max),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+    });
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
@@ -699,6 +847,9 @@ pub async fn run() {
     env_logger::init();
 
     #[cfg(target_arch = "wasm32")]
+    let (send_data, recv_data) = async_channel::unbounded::<Vec<u8>>();
+
+    #[cfg(target_arch = "wasm32")]
     {
         // File reading
         let document = web_sys::window().unwrap().document().unwrap();
@@ -709,100 +860,23 @@ pub async fn run() {
             .unwrap();
 
         let input_cloned = input.clone();
-
         let closure = Closure::wrap(Box::new(move |_: web_sys::Event| {
             if let Some(file_list) = input_cloned.files() {
                 if let Some(file) = file_list.get(0) {
                     let reader = web_sys::FileReader::new().unwrap();
 
                     let reader_cloned = reader.clone();
-
+                    let sd = send_data.clone();
                     let onloadend_cb = Closure::wrap(Box::new(move |_: web_sys::Event| {
                         let result = reader_cloned.result().unwrap();
                         let array = js_sys::Uint8Array::new(&result);
                         let len = array.length() as usize;
+                        let sd3 = sd.clone();
 
                         wasm_bindgen_futures::spawn_local(async move {
-                            let event_loop = EventLoop::new().unwrap();
-                            let window = create_window(&event_loop);
-                            let mut state = State::new(&window).await;
-
                             let mut data = array.to_vec();
-                            let reader = Cursor::new(data.as_slice());
-                            state.visualize_cube(reader);
-
-                            setup_event_loop(state, event_loop);
+                            sd3.send(data).await.unwrap();
                         });
-
-                        /*state.diffuse_bind_group =
-                        state.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            layout: &state.texture_bind_group_layout,
-                            entries: &[
-                                wgpu::BindGroupEntry {
-                                    binding: 0,
-                                    resource: wgpu::BindingResource::TextureView(&texture.view),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 1,
-                                    resource: wgpu::BindingResource::Sampler(&texture.sampler),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 2,
-                                    resource: wgpu::BindingResource::Buffer(
-                                        wgpu::BufferBinding {
-                                            buffer: &state.rot_mat_buf,
-                                            offset: 0,
-                                            size: wgpu::BufferSize::new(std::mem::size_of::<
-                                                Mat4<f32>,
-                                            >(
-                                            )
-                                                as wgpu::BufferAddress),
-                                        },
-                                    ),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 3,
-                                    resource: wgpu::BindingResource::Buffer(
-                                        wgpu::BufferBinding {
-                                            buffer: &state.window_size_buf,
-                                            offset: 0,
-                                            size: wgpu::BufferSize::new(16),
-                                        },
-                                    ),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 4,
-                                    resource: wgpu::BindingResource::Buffer(
-                                        wgpu::BufferBinding {
-                                            buffer: &state.time_buf,
-                                            offset: 0,
-                                            size: wgpu::BufferSize::new(16),
-                                        },
-                                    ),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 5,
-                                    resource: wgpu::BindingResource::Buffer(
-                                        wgpu::BufferBinding {
-                                            buffer: &state.cam_origin_buf,
-                                            offset: 0,
-                                            size: wgpu::BufferSize::new(16),
-                                        },
-                                    ),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 6,
-                                    resource: wgpu::BindingResource::Buffer(
-                                        wgpu::BufferBinding {
-                                            buffer: &state.cuts_buf,
-                                            offset: 0,
-                                            size: wgpu::BufferSize::new(16),
-                                        },
-                                    ),
-                                },
-                            ],
-                            label: Some("diffuse_bind_group"),
-                        });*/
 
                         // Here you can use `data` (Vec<u8>) as you like.
                         web_sys::console::log_1(&format!("Read {} bytes from file", len).into());
@@ -818,23 +892,21 @@ pub async fn run() {
         input.set_onchange(Some(closure.as_ref().unchecked_ref()));
         closure.forget(); // prevent drop
     }
+
+    let event_loop = EventLoop::new().unwrap();
+    let window = create_window(&event_loop);
+    let mut state = State::new(&window).await;
+
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let event_loop = EventLoop::new().unwrap();
-        let window = create_window(&event_loop);
-        let mut state = State::new(&window).await;
-
         let file = File::open(&CUBES_PATH[0]).unwrap();
         let mmap = unsafe { Mmap::map(&file).unwrap() };
 
         let reader = Cursor::new(mmap);
         state.visualize_cube(reader);
-
-        setup_event_loop(state, event_loop);
     }
-}
 
-fn setup_event_loop(mut state: State<'_>, event_loop: EventLoop<()>) {
+    //setup_event_loop(state, event_loop);
     let mut panning = false;
     let mut cuts = false;
     let mut cursor_pos = PhysicalPosition::new(0.0, 0.0);
@@ -851,8 +923,51 @@ fn setup_event_loop(mut state: State<'_>, event_loop: EventLoop<()>) {
     let mut offset = 0.0;
     let mut dscale = 0.0;
     let mut doffset = 0.0;
+    event_loop.set_control_flow(ControlFlow::Wait);
     event_loop
         .run(move |event, control_flow| {
+            #[cfg(target_arch = "wasm32")]
+            if let Ok(data) = recv_data.try_recv() {
+                let reader = Cursor::new(data.as_slice());
+                match state.visualize_cube(reader) {
+                    Ok(()) => {}
+                    Err(error) => web_sys::window()
+                        .unwrap()
+                        .alert_with_message(error)
+                        .unwrap(),
+                }
+            }
+
+            #[cfg(target_arch = "wasm32")]
+            if let Ok(params) = CHANNEL_PARAMS.1.try_recv() {
+                let Params {
+                    perspective,
+                    minmax,
+                    ..
+                } = params;
+
+                if let Some(perspective) = perspective {
+                    state.queue.write_buffer(
+                        &state.perspective_buf,
+                        0,
+                        bytemuck::bytes_of(&[
+                            if perspective { 1.0_f32 } else { 0.0_f32 },
+                            0.0_f32,
+                            0.0_f32,
+                            0.0_f32,
+                        ]),
+                    );
+                }
+
+                if let Some(minmax) = minmax {
+                    state.queue.write_buffer(
+                        &state.minmax_buf,
+                        0,
+                        bytemuck::bytes_of(&[minmax.start, minmax.end, 0.0_f32, 0.0_f32]),
+                    );
+                }
+            }
+
             match event {
                 Event::WindowEvent {
                     ref event,
@@ -889,7 +1004,7 @@ fn setup_event_loop(mut state: State<'_>, event_loop: EventLoop<()>) {
 
                                 let reader = Cursor::new(mmap);
 
-                                state.visualize_cube(reader);
+                                let _ = state.visualize_cube(reader);
                             }
                             WindowEvent::KeyboardInput {
                                 event:
@@ -1061,7 +1176,7 @@ fn create_window(event_loop: &EventLoop<()>) -> Window {
     #[cfg(target_arch = "wasm32")]
     {
         use winit::dpi::LogicalSize;
-        let _ = window.request_inner_size(LogicalSize::new(768, 512));
+        //let _ = window.request_inner_size(LogicalSize::new(768, 512));
     }
 
     window

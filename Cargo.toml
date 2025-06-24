@@ -17,6 +17,9 @@ wgpu = { version = "25.0.2", features = ["glsl"]}
 pollster = "0.3"
 fitsrs = { path = "../fitsrs" }
 memmap2 = "0.9.5"
+#egui-wgpu = "0.27.2"
+#egui-winit = "0.27.2"
+#egui = "0.27.2"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -48,9 +51,10 @@ js-sys = "0.3.50"
 wasm-bindgen-futures = "0.4.30"
 getrandom = { version = "0.2", features = ["js"] }
 async-channel = { version = "2.3.1" }
+lazy_static = "1.5.0"
 
 [profile.release]
-opt-level = 'z'
+opt-level = 3
 debug = false
 debug-assertions = false
 overflow-checks = false
