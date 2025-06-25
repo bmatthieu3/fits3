@@ -44,12 +44,21 @@ use std::fs::File;
 use std::io::Cursor;
 
 const CUBES_PATH: &[&'static str] = &[
-    /*"./cubes/NGC3198_cube.fits",
+    "./cubes/NGC3198_cube.fits",
     "./cubes/NGC7331_cube.fits",
-    "./cubes/CO_21.fits",*/
+    "./cubes/CO_21.fits",
     "./cubes/DHIGLS_DF_Tb.fits",
     "./cubes/DHIGLS_MG_Tb.fits",
     "./cubes/DHIGLS_PO_Tb.fits", //"./cubes/cosmo512-be.fits",
+];
+
+const MINMAX: &[Range<f32>] = &[
+    -2.451346722E-03..1.179221552E-02,
+    -2.451346722E-03..1.179221552E-02,
+    -2.451346722E-03..1.179221552E-02,
+    0.0..1.0,
+    0.0..1.0,
+    0.0..1.0,
 ];
 
 struct State<'a> {
@@ -85,14 +94,22 @@ struct State<'a> {
     clock: Clock,
 
     i: usize,
+
+    scale: f32,
+    offset: f32,
     //egui: EguiRenderer,
 }
 
-fn parse_fits_data_cube<R>(
-    fits: &mut Fits<Cursor<R>>,
-) -> Result<(&[u8], (u32, u32, u32)), &'static str>
+struct Cube<'a> {
+    data: &'a [u8],
+    dim: (u32, u32, u32),
+    datamin: Option<f32>,
+    datamax: Option<f32>,
+}
+
+fn parse_fits_data_cube<'a, R>(fits: &'a mut Fits<Cursor<R>>) -> Result<Cube<'a>, &'static str>
 where
-    R: AsRef<[u8]> + std::fmt::Debug,
+    R: AsRef<[u8]> + std::fmt::Debug + 'a,
 {
     if let Some(Ok(hdu)) = fits.next() {
         match hdu {
@@ -121,7 +138,23 @@ where
                         }
                     }
 
-                    Ok((image.raw_bytes(), (d1, d2, d3)))
+                    let datamin = if let Some(Value::Float { value, .. }) = header.get("DATAMIN") {
+                        Some(*value as f32)
+                    } else {
+                        None
+                    };
+                    let datamax = if let Some(Value::Float { value, .. }) = header.get("DATAMAX") {
+                        Some(*value as f32)
+                    } else {
+                        None
+                    };
+
+                    Ok(Cube {
+                        data: image.raw_bytes(),
+                        dim: (d1, d2, d3),
+                        datamin,
+                        datamax,
+                    })
                 } else {
                     Err("FITS image extension not found")
                 }
@@ -138,11 +171,20 @@ fn read_fits<R: AsRef<[u8]> + Debug>(
     reader: Cursor<R>,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-) -> Result<Texture, &'static str> {
+) -> Result<(Texture, Option<f32>, Option<f32>), &'static str> {
     let mut fits = Fits::from_reader(reader);
-    let (raw_bytes, dim) = parse_fits_data_cube(&mut fits)?;
+    let Cube {
+        data: raw_bytes,
+        dim,
+        datamin,
+        datamax,
+    } = parse_fits_data_cube(&mut fits)?;
 
-    Texture::from_raw_bytes::<f32>(&device, &queue, Some(raw_bytes), dim, 4, "cube")
+    Ok((
+        Texture::from_raw_bytes::<f32>(&device, &queue, Some(raw_bytes), dim, 4, "cube")?,
+        datamin,
+        datamax,
+    ))
 }
 
 use crate::math::Mat4;
@@ -597,6 +639,9 @@ impl<'a> State<'a> {
             clock,
             //egui,
             i: 0,
+
+            scale: 1.0,
+            offset: 0.0,
         }
     }
 
@@ -706,8 +751,30 @@ impl<'a> State<'a> {
     fn visualize_cube<R: AsRef<[u8]> + std::fmt::Debug>(
         &mut self,
         reader: Cursor<R>,
+        // override the minmax value
+        min: Option<f32>,
+        max: Option<f32>,
     ) -> Result<(), &'static str> {
-        let new_cube = read_fits(reader, &self.device, &self.queue)?;
+        let (new_cube, datamin, datamax) = read_fits(reader, &self.device, &self.queue)?;
+
+        // set the new datamin/datamax if there is some
+        let datamin = min.or(datamin).unwrap_or(0.0);
+        let datamax = max.or(datamax).unwrap_or(1.0);
+        self.queue.write_buffer(
+            &self.minmax_buf,
+            0,
+            bytemuck::bytes_of(&[datamin, datamax, 0.0_f32, 0.0_f32]),
+        );
+
+        // reset the cutoff values
+        self.queue.write_buffer(
+            &self.cuts_buf,
+            0,
+            bytemuck::bytes_of(&[1.0 as f32, 0.0, 0.0, 0.0]),
+        );
+
+        self.scale = 1.0;
+        self.offset = 0.0;
 
         self.diffuse_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &self.texture_bind_group_layout,
@@ -903,7 +970,7 @@ pub async fn run() {
         let mmap = unsafe { Mmap::map(&file).unwrap() };
 
         let reader = Cursor::new(mmap);
-        state.visualize_cube(reader);
+        let _ = state.visualize_cube(reader, None, None);
     }
 
     //setup_event_loop(state, event_loop);
@@ -919,8 +986,6 @@ pub async fn run() {
     let mut ddelta: f64 = 0.0;
 
     // cuts
-    let mut scale = 1.0;
-    let mut offset = 0.0;
     let mut dscale = 0.0;
     let mut doffset = 0.0;
     event_loop.set_control_flow(ControlFlow::Wait);
@@ -929,7 +994,7 @@ pub async fn run() {
             #[cfg(target_arch = "wasm32")]
             if let Ok(data) = recv_data.try_recv() {
                 let reader = Cursor::new(data.as_slice());
-                match state.visualize_cube(reader) {
+                match state.visualize_cube(reader, None, None) {
                     Ok(()) => {}
                     Err(error) => web_sys::window()
                         .unwrap()
@@ -1004,7 +1069,12 @@ pub async fn run() {
 
                                 let reader = Cursor::new(mmap);
 
-                                let _ = state.visualize_cube(reader);
+                                let minmax = &MINMAX[state.i];
+                                let _ = state.visualize_cube(
+                                    reader,
+                                    Some(minmax.start),
+                                    Some(minmax.end),
+                                );
                             }
                             WindowEvent::KeyboardInput {
                                 event:
@@ -1080,8 +1150,8 @@ pub async fn run() {
                                 ..
                             } => {
                                 cuts = false;
-                                scale += dscale;
-                                offset += doffset;
+                                state.scale = state.scale * (1.0 + dscale);
+                                state.offset = state.offset * (1.0 + doffset);
                             }
                             WindowEvent::CursorMoved { position, .. } => {
                                 cursor_pos = *position;
@@ -1116,15 +1186,16 @@ pub async fn run() {
                                     let dy = (cursor_pos.y - start_cursor_pos.y)
                                         / ((state.size.height as f64) * 0.5);
 
-                                    dscale = dy;
-                                    doffset = dx;
+                                    // between 0 and 1
+                                    dscale = dy as f32;
+                                    doffset = dx as f32;
 
                                     state.queue.write_buffer(
                                         &state.cuts_buf,
                                         0,
                                         bytemuck::bytes_of(&[
-                                            scale as f32 + dscale as f32,
-                                            offset as f32 + doffset as f32,
+                                            state.scale * (1.0 + dscale),
+                                            state.offset * (1.0 + doffset),
                                             0.0,
                                             0.0,
                                         ]),

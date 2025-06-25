@@ -16,7 +16,18 @@
             <ul>
                 <li>Save your numpy array to a FITS file by following this <a href="./convert_numpy2fits.py" target="_blank">python script</a></li>
                 <li>Your 3d array shape must be less than 512 in every dimension. Otherwise the browser may not support it</li>
-                <li>Example of cubes to load can be found <a href="">here</a></li>
+                <li>Example of cubes to load with recommanded min/max values to put in the text fields<table id="cube_samples">
+                  <thead>
+                    <tr>
+                      <th>Filename</th>
+                      <th>Min value</th>
+                      <th>Max value</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <!-- Rows will be inserted here -->
+                  </tbody>
+                </table></li>
             </ul>
         </div>
         <div>Controls:
@@ -81,6 +92,32 @@
             fits3.normalize(min, max);
         });
     });
+
+    fetch("https://alasky.cds.unistra.fr/cubes-samples/cubes-list.json")
+      .then((resp) => {
+        console.log(resp)
+        return resp.json()
+      })
+      .then((cubes) => {
+        const tbody = document.querySelector("#cube_samples tbody");
+        cubes.forEach(item => {
+          const row = document.createElement("tr");
+
+          const filenameCell = document.createElement("td");
+          filenameCell.innerHTML = `<a href="https://alasky.cds.unistra.fr/cubes-samples/${item.filename}">${item.filename}</a>`;
+          row.appendChild(filenameCell);
+
+          const dataminCell = document.createElement("td");
+          dataminCell.textContent = item.datamin;
+          row.appendChild(dataminCell);
+
+          const datamaxCell = document.createElement("td");
+          datamaxCell.textContent = item.datamax;
+          row.appendChild(datamaxCell);
+
+          tbody.appendChild(row);
+        })
+      })
   </script>
 </body>
 
@@ -141,5 +178,17 @@
 
     .resizer:hover {
       background-color: #666;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 50%;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 8px;
+    }
+    th {
+      background-color: #f2f2f2;
     }
 </style>

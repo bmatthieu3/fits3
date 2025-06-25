@@ -201,8 +201,8 @@ void main() {
 
     vec3 dr = r * step;
 
-    //float random = fract(sin(gl_FragCoord.x * 12.9898 + gl_FragCoord.y * 78.233) * 43758.5453);
-    float random = 0.0;
+    float random = fract(sin(gl_FragCoord.x * 12.9898 + gl_FragCoord.y * 78.233) * 43758.5453);
+    //float random = 0.0;
     float t_s = t_c + step * random;
     // absolute sampling point
     // scaled to the origin of the cube
